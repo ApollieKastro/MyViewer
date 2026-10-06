@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# Установщик mvi: установка, обновление и удаление в ~/.local/bin.
+# Совместимость: рядом кладётся симлинк mviewer → mvi.
+#
+# Запуск интерактивно:   ./install.sh
+# Запуск с аргументом:   ./install.sh install|update|remove
+set -euo pipefail
+
+APP_NAME="mvi"
+LEGACY_NAME="mviewer"          # старое имя команды (оставляем как симлинк)
+BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
+BIN_PATH="$BIN_DIR/$APP_NAME"
+LEGACY_PATH="$BIN_DIR/$LEGACY_NAME"
+CONFIG_DIR="$HOME/.config/mviewer"   # каталог конфига не переименовываем
+SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ---- Цвета (отключаются, если вывод не в терминал) ----
+if [ -t 1 ]; then
+    C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'
+    C_GREEN=$'\033[32m'; C_RED=$'\033[31m'; C_YELLOW=$'\033[33m'
+else
+    C_RESET=""; C_BOLD=""; C_GREEN=""; C_RED=""; C_YELLOW=""
+fi
+
+ok()   { printf '%s✓%s %s\n' "$C_GREEN" "$C_RESET" "$*"; }
+warn() { printf '%s!%s %s\n' "$C_YELLOW" "$C_RESET" "$*"; }
+err()  { printf '%s✗%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; }
+
+# ---- Сборка ----
+# Предпочитаем go build (свежий код), иначе берём готовый бинарник из проекта.
+build() {
+    if command -v go >/dev/null 2>&1; then
+        echo "Сборка проекта..."
+        (cd "$SRC_DIR" && go build -o "$APP_NAME" .)
+    elif [ -x "$SRC_DIR/$APP_NAME" ]; then
+        warn "go не найден — использую готовый бинарник $SRC_DIR/$APP_NAME"
+    else
+        err "для сборки нужен Go (https://go.dev/dl/), либо готовый бинарник $APP_NAME в $SRC_DIR"
+        exit 1
+    fi
+    [ -x "$SRC_DIR/$APP_NAME" ] || { err "сборка не удалась"; exit 1; }
+}
+
+# Проверка, что BIN_DIR виден из PATH.
+check_path() {
+    case ":$PATH:" in
+        *":$BIN_DIR:"*) return 0 ;;
+    esac
+    warn "$BIN_DIR не найден в PATH — команда $APP_NAME может не запускаться"
+    warn "добавьте в ~/.bashrc:  export PATH=\"\$BIN_DIR:\$PATH\""
+    return 0
+}
+
+# ---- 1. Установка ----
+do_install() {
+    if [ -x "$BIN_PATH" ]; then
+        warn "$APP_NAME уже установлен: $("$BIN_PATH" --version 2>/dev/null || echo '?')"
+        # При неинтерактивном запуске (EOF) — перезаписываем без вопроса.
+        read -r -p "Перезаписать? [y/N] " answer || answer="y"
+        case "$answer" in
+            [yY]|[yY][eE][sS]|да|Да) ;;
+            *) echo "Отменено."; return 0 ;;
+        esac
+    elif [ -e "$LEGACY_PATH" ]; then
+        ok "найдена старая установка $LEGACY_NAME — обновляю до $APP_NAME"
+    fi
+
+    build
+    mkdir -p "$BIN_DIR"
+    cp -f "$SRC_DIR/$APP_NAME" "$BIN_PATH"
+    chmod 755 "$BIN_PATH"
+    # Совместимость: mviewer продолжает работать (симлинк на mvi).
+    ln -sf "$APP_NAME" "$LEGACY_PATH"
+    ok "установлено: $BIN_PATH ($("$BIN_PATH" --version 2>/dev/null))"
+    check_path
+    echo "Запуск:  $APP_NAME [опции] [файл.md | директория]"
+}
+
+# ---- 2. Обновление ----
+do_update() {
+    if [ ! -x "$BIN_PATH" ]; then
+        if [ -e "$LEGACY_PATH" ]; then
+            do_install # миграция со старого имени
+            return
+        fi
+        err "$APP_NAME не установлен — сначала выберите «Установить»"
+        exit 1
+    fi
+    local old
+    old="$("$BIN_PATH" --version 2>/dev/null || echo '?')"
+
+    build
+    cp -f "$SRC_DIR/$APP_NAME" "$BIN_PATH"
+    chmod 755 "$BIN_PATH"
+    ln -sf "$APP_NAME" "$LEGACY_PATH"
+    local new
+    new="$("$BIN_PATH" --version 2>/dev/null || echo '?')"
+    ok "обновлено: $old → $new"
+    check_path
+}
+
+# ---- 3. Удаление ----
+do_remove() {
+    local removed=""
+    if [ -x "$BIN_PATH" ]; then
+        rm -f "$BIN_PATH"
+        removed="$BIN_PATH"
+    fi
+    if [ -e "$LEGACY_PATH" ] || [ -L "$LEGACY_PATH" ]; then
+        rm -f "$LEGACY_PATH"
+        removed="${removed:+$removed, }$LEGACY_PATH"
+    fi
+    if [ -z "$removed" ]; then
+        warn "$APP_NAME не установлен ($BIN_PATH отсутствует)"
+        return 0
+    fi
+    ok "удалено: $removed"
+
+    if [ -d "$CONFIG_DIR" ]; then
+        # При неинтерактивном запуске (EOF) — настройки не трогаем.
+        read -r -p "Удалить также настройки ($CONFIG_DIR)? [y/N] " answer || answer=""
+        case "$answer" in
+            [yY]|[yY][eE][sS]|да|Да)
+                rm -rf "$CONFIG_DIR"
+                ok "настройки удалены"
+                ;;
+            *) echo "Настройки сохранены." ;;
+        esac
+    fi
+}
+
+# ---- Интерактивное меню ----
+menu() {
+    echo "${C_BOLD}Установщик $APP_NAME${C_RESET}"
+    echo
+    local installed="не установлен"
+    if [ -x "$BIN_PATH" ]; then
+        installed="установлен: $("$BIN_PATH" --version 2>/dev/null || echo '?') → $BIN_PATH"
+    fi
+    echo "Текущее состояние: $installed"
+    echo
+    echo "  1) Установить"
+    echo "  2) Обновить"
+    echo "  3) Удалить"
+    echo "  0) Выход"
+    echo
+    read -r -p "Выберите пункт: " choice || choice=0
+    case "$choice" in
+        1) do_install ;;
+        2) do_update ;;
+        3) do_remove ;;
+        0) exit 0 ;;
+        *) err "неизвестный пункт: $choice"; exit 1 ;;
+    esac
+}
+
+# ---- Точка входа ----
+case "${1:-}" in
+    install|установить)  do_install ;;
+    update|обновить)     do_update ;;
+    remove|uninstall|удалить) do_remove ;;
+    -h|--help|help)
+        echo "Использование: ./install.sh [install|update|remove]"
+        echo "Без аргументов — интерактивное меню."
+        echo "Каталог установки: $BIN_DIR (переопределяется переменной BIN_DIR)"
+        ;;
+    "") menu ;;
+    *) err "неизвестная команда: $1 (см. --help)"; exit 1 ;;
+esac
