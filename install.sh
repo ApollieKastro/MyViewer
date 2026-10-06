@@ -4,6 +4,8 @@
 #
 # Запуск интерактивно:   ./install.sh
 # Запуск с аргументом:   ./install.sh install|update|remove
+# Установка одной командой (из pipe, исходники клонируются сами):
+#   curl -fsSL https://raw.githubusercontent.com/ApollieKastro/MyViewer/main/install.sh | bash
 set -euo pipefail
 
 APP_NAME="mvi"
@@ -12,7 +14,11 @@ BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
 BIN_PATH="$BIN_DIR/$APP_NAME"
 LEGACY_PATH="$BIN_DIR/$LEGACY_NAME"
 CONFIG_DIR="$HOME/.config/mviewer"   # каталог конфига не переименовываем
-SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_URL="${REPO_URL:-https://github.com/ApollieKastro/MyViewer.git}"
+SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" && pwd)"
+TMP_SRC_DIR=""                   # временный клон источников (если потребовался)
+INTERACTIVE=0                    # 1 — stdin это терминал, read безопасен
+[ -t 0 ] && INTERACTIVE=1
 
 # ---- Цвета (отключаются, если вывод не в терминал) ----
 if [ -t 1 ]; then
@@ -26,9 +32,32 @@ ok()   { printf '%s✓%s %s\n' "$C_GREEN" "$C_RESET" "$*"; }
 warn() { printf '%s!%s %s\n' "$C_YELLOW" "$C_RESET" "$*"; }
 err()  { printf '%s✗%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; }
 
+# ---- Источники ----
+# При запуске из pipe (curl | bash) скрипт лежит вне репозитория:
+# клонируем исходники во временный каталог и собираем оттуда.
+ensure_sources() {
+    if [ -f "$SRC_DIR/go.mod" ]; then
+        return 0   # запуск из клона репозитория — исходники на месте
+    fi
+    if ! command -v git >/dev/null 2>&1; then
+        err "исходники не найдены рядом со скриптом, а git не установлен"
+        err "установите git (https://git-scm.com/) или клонируйте репозиторий вручную"
+        exit 1
+    fi
+    TMP_SRC_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mvi-install.XXXXXX")"
+    trap 'rm -rf "$TMP_SRC_DIR"' EXIT
+    echo "Клонирую исходники: $REPO_URL"
+    if ! git clone --depth 1 "$REPO_URL" "$TMP_SRC_DIR/repo" >&2; then
+        err "не удалось склонировать $REPO_URL"
+        exit 1
+    fi
+    SRC_DIR="$TMP_SRC_DIR/repo"
+}
+
 # ---- Сборка ----
 # Предпочитаем go build (свежий код), иначе берём готовый бинарник из проекта.
 build() {
+    ensure_sources
     if command -v go >/dev/null 2>&1; then
         echo "Сборка проекта..."
         (cd "$SRC_DIR" && go build -o "$APP_NAME" .)
@@ -55,8 +84,12 @@ check_path() {
 do_install() {
     if [ -x "$BIN_PATH" ]; then
         warn "$APP_NAME уже установлен: $("$BIN_PATH" --version 2>/dev/null || echo '?')"
-        # При неинтерактивном запуске (EOF) — перезаписываем без вопроса.
-        read -r -p "Перезаписать? [y/N] " answer || answer="y"
+        # В pipe (stdin не терминал) вопрос задавать нельзя — перезаписываем.
+        if [ "$INTERACTIVE" -eq 1 ]; then
+            read -r -p "Перезаписать? [y/N] " answer || answer="y"
+        else
+            answer="y"
+        fi
         case "$answer" in
             [yY]|[yY][eE][sS]|да|Да) ;;
             *) echo "Отменено."; return 0 ;;
@@ -117,8 +150,12 @@ do_remove() {
     ok "удалено: $removed"
 
     if [ -d "$CONFIG_DIR" ]; then
-        # При неинтерактивном запуске (EOF) — настройки не трогаем.
-        read -r -p "Удалить также настройки ($CONFIG_DIR)? [y/N] " answer || answer=""
+        # В pipe (stdin не терминал) настройки не трогаем.
+        if [ "$INTERACTIVE" -eq 1 ]; then
+            read -r -p "Удалить также настройки ($CONFIG_DIR)? [y/N] " answer || answer=""
+        else
+            answer=""
+        fi
         case "$answer" in
             [yY]|[yY][eE][sS]|да|Да)
                 rm -rf "$CONFIG_DIR"
@@ -161,9 +198,12 @@ case "${1:-}" in
     remove|uninstall|удалить) do_remove ;;
     -h|--help|help)
         echo "Использование: ./install.sh [install|update|remove]"
-        echo "Без аргументов — интерактивное меню."
+        echo "Без аргументов — интерактивное меню (из pipe — сразу установка)."
         echo "Каталог установки: $BIN_DIR (переопределяется переменной BIN_DIR)"
         ;;
-    "") menu ;;
+    "")
+        # Из pipe (curl | bash) меню не показываем — stdin это сам скрипт.
+        if [ "$INTERACTIVE" -eq 1 ]; then menu; else do_install; fi
+        ;;
     *) err "неизвестная команда: $1 (см. --help)"; exit 1 ;;
 esac
