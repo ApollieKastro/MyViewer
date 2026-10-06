@@ -1,0 +1,36 @@
+# Бинарники сборки
+/mvi
+/mviewer
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Тесты и покрытие
+*.test
+*.out
+coverage.html
+coverage.out
+
+# Профили pprof
+*.prof
+pprof/
+
+# Зависимости и кэш
+/vendor/
+
+# Редакторы и IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Локальные настройки окружения
+.env
+.env.local
