@@ -39,9 +39,11 @@ mvi --style dracula main.go
 curl -fsSL https://raw.githubusercontent.com/ApollieKastro/MyViewer/main/install.sh | bash
 ```
 
-Скрипт сам клонирует исходники во временный каталог, соберёт `mvi` и
-установит его в `~/.local/bin` (симлинк `mviewer` создаётся рядом).
-Нужны `git` и [Go](https://go.dev/dl/).
+Установщик сам выбирает способ: если есть [Go](https://go.dev/dl/) —
+соберёт из исходников, если нет — скачает готовый бинарник из
+[Releases](https://github.com/ApollieKastro/MyViewer/releases)
+(linux/darwin, amd64/arm64). Ставится в `~/.local/bin`, рядом создаётся
+симлинк `mviewer`.
 
 Обновление и удаление — тоже одной командой:
 

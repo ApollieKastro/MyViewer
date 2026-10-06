@@ -4,8 +4,9 @@
 #
 # Запуск интерактивно:   ./install.sh
 # Запуск с аргументом:   ./install.sh install|update|remove
-# Установка одной командой (из pipe, исходники клонируются сами):
+# Установка одной командой (из pipe):
 #   curl -fsSL https://raw.githubusercontent.com/ApollieKastro/MyViewer/main/install.sh | bash
+# Без Go на машине готовый бинарник скачивается из GitHub Releases.
 set -euo pipefail
 
 APP_NAME="mvi"
@@ -54,20 +55,67 @@ ensure_sources() {
     SRC_DIR="$TMP_SRC_DIR/repo"
 }
 
-# ---- Сборка ----
-# Предпочитаем go build (свежий код), иначе берём готовый бинарник из проекта.
-build() {
-    ensure_sources
+# ---- Готовый бинарник из GitHub Releases ----
+# Платформа по uname: linux/darwin + amd64/arm64.
+detect_platform() {
+    local os arch
+    case "$(uname -s)" in
+        Linux)  os="linux" ;;
+        Darwin) os="darwin" ;;
+        *) err "неподдерживаемая ОС: $(uname -s) (нужен Linux или macOS)"; exit 1 ;;
+    esac
+    case "$(uname -m)" in
+        x86_64|amd64)  arch="amd64" ;;
+        aarch64|arm64) arch="arm64" ;;
+        *) err "неподдерживаемая архитектура: $(uname -m)"; exit 1 ;;
+    esac
+    PLATFORM="$os-$arch"
+}
+
+# Скачивает релиз mvi-<platform>.tar.gz во временный каталог.
+# Используется, когда Go не установлен — сборка не нужна.
+download_release() {
+    detect_platform
+    local url="https://github.com/ApollieKastro/MyViewer/releases/latest/download/mvi-${PLATFORM}.tar.gz"
+    TMP_SRC_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mvi-install.XXXXXX")"
+    trap 'rm -rf "$TMP_SRC_DIR"' EXIT
+    echo "Go не установлен — скачиваю готовый бинарник ($PLATFORM)..."
+    if command -v curl >/dev/null 2>&1; then
+        if ! curl -fsSL "$url" -o "$TMP_SRC_DIR/mvi.tar.gz"; then
+            err "не удалось скачать $url"
+            err "релиз для $PLATFORM ещё не опубликован — установите Go (https://go.dev/dl/)"
+            exit 1
+        fi
+    elif command -v wget >/dev/null 2>&1; then
+        if ! wget -qO "$TMP_SRC_DIR/mvi.tar.gz" "$url"; then
+            err "не удалось скачать $url"
+            err "релиз для $PLATFORM ещё не опубликован — установите Go (https://go.dev/dl/)"
+            exit 1
+        fi
+    else
+        err "нужен curl или wget для скачивания готового бинарника (либо установите Go)"
+        exit 1
+    fi
+    if ! tar -xzf "$TMP_SRC_DIR/mvi.tar.gz" -C "$TMP_SRC_DIR"; then
+        err "архив релиза повреждён — попробуйте позже"
+        exit 1
+    fi
+    SRC_DIR="$TMP_SRC_DIR"
+}
+
+# ---- Получение бинарника ----
+# Порядок: go build из исходников → бинарник рядом со скриптом → GitHub Release.
+obtain_binary() {
     if command -v go >/dev/null 2>&1; then
+        ensure_sources
         echo "Сборка проекта..."
         (cd "$SRC_DIR" && go build -o "$APP_NAME" .)
     elif [ -x "$SRC_DIR/$APP_NAME" ]; then
         warn "go не найден — использую готовый бинарник $SRC_DIR/$APP_NAME"
     else
-        err "для сборки нужен Go (https://go.dev/dl/), либо готовый бинарник $APP_NAME в $SRC_DIR"
-        exit 1
+        download_release
     fi
-    [ -x "$SRC_DIR/$APP_NAME" ] || { err "сборка не удалась"; exit 1; }
+    [ -x "$SRC_DIR/$APP_NAME" ] || { err "не удалось получить бинарник $APP_NAME"; exit 1; }
 }
 
 # Проверка, что BIN_DIR виден из PATH.
@@ -98,7 +146,7 @@ do_install() {
         ok "найдена старая установка $LEGACY_NAME — обновляю до $APP_NAME"
     fi
 
-    build
+    obtain_binary
     mkdir -p "$BIN_DIR"
     cp -f "$SRC_DIR/$APP_NAME" "$BIN_PATH"
     chmod 755 "$BIN_PATH"
@@ -122,7 +170,7 @@ do_update() {
     local old
     old="$("$BIN_PATH" --version 2>/dev/null || echo '?')"
 
-    build
+    obtain_binary
     cp -f "$SRC_DIR/$APP_NAME" "$BIN_PATH"
     chmod 755 "$BIN_PATH"
     ln -sf "$APP_NAME" "$LEGACY_PATH"

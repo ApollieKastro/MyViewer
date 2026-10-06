@@ -18,8 +18,9 @@ import (
 	"mviewer/internal/render"
 )
 
-// version — версия приложения.
-const version = "1.1.0"
+// version — версия приложения (перебивается через ldflags -X main.version
+// при сборке в CI по git-тегу).
+var version = "1.1.0"
 
 // progName — имя команды (используется в usage и сообщениях).
 const progName = "mvi"
